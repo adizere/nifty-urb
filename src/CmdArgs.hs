@@ -9,8 +9,12 @@ parseArgs :: IO (Maybe (Int, [(String, Int)], Int))
 parseArgs = do
     argz <- getArgs
     let procId   = parseProcId argz
-    let ipPorts  = parseIpsPorts $ drop 1 argz
+    let ipPorts  = parseIpsPorts (drop 1 argz) []
     let msgCount = parseMessagesCount $ drop 11 argz
+
+    putStrLn $ "this proc has id " ++ (show procId)
+    putStrLn $ "all procs info " ++ (show ipPorts)
+    putStrLn $ "message count " ++ (show msgCount)
 
     if (isNothing procId || isNothing ipPorts || isNothing msgCount) 
         then 
@@ -30,17 +34,24 @@ parseArgs = do
 
 parseProcId :: [String] -> Maybe Int
 parseProcId argz =
-    Nothing
+    maybeRead (head argz)
 
 
-parseIpsPorts :: [String] -> Maybe [(String, Int)]
-parseIpsPorts argz =
-    Nothing
-    
+parseIpsPorts :: [String] -> [(String, Int)] -> Maybe [(String, Int)]
+parseIpsPorts argz accum
+    | length accum == 5 = Just $ reverse accum
+    | isJust newPort    = parseIpsPorts (drop 2 argz) 
+                                        ((newIp, fromJust newPort):accum)
+    | otherwise         = Nothing
+    where
+        (newIpList, newPortString) = splitAt 1 argz
+        newIp = head newIpList
+        newPort = maybeRead (head newPortString) :: Maybe Int
+
 
 parseMessagesCount :: [String] -> Maybe Int
 parseMessagesCount argz =
-    Nothing
+    maybeRead (head argz)
 
 
 -- | Parses a String into Just a or into Nothing

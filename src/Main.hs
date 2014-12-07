@@ -2,45 +2,38 @@ module Main where
 
 
 import CmdArgs (parseArgs)
-import URB (startURB)
+import Nifty.URB (startURB)
 
 import Data.Maybe
-import System.Posix.Signals (installHandler, Handler(Catch), sigINT, sigTERM)
-import Control.Concurrent.MVar (tryTakeMVar, MVar, newEmptyMVar, putMVar)
-import Control.Concurrent (threadDelay)
-import System.IO (hFlush, stdout)
+import System.Posix.Signals (installHandler, Handler(Catch), sigINT, sigTERM, sigUSR1)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent (forkIO)
+import System.Exit (exitSuccess)
 
 
-
-handler :: MVar (Int) -> IO ()
-handler s_interrupted = do
+stopHandler :: MVar (Int) -> IO ()
+stopHandler stopMVar = do
     putStrLn "Signal caught.. program will exit"
-    putMVar s_interrupted 1
+    putMVar stopMVar 1
+
+
+startHandler :: MVar (Int) -> IO ()
+startHandler startMVar = do
+    putMVar startMVar 1
 
 
 main :: IO ()
 main = do
-    s_interrupted <- newEmptyMVar
-    _ <- installHandler sigINT (Catch $ handler s_interrupted) Nothing
-    _ <- installHandler sigTERM (Catch $ handler s_interrupted) Nothing
-    putStrLn "heueue"
-    urbArgs <- parseArgs
-    if isNothing urbArgs
-        then return () 
-        else do
-            startURB $ fromJust urbArgs
-    recvFunction s_interrupted
+    startMVar <- newEmptyMVar
+    stopMVar  <- newEmptyMVar
+    _ <- installHandler sigINT (Catch $ stopHandler stopMVar) Nothing
+    _ <- installHandler sigTERM (Catch $ stopHandler stopMVar) Nothing
+    _ <- installHandler sigUSR1 (Catch $ startHandler startMVar) Nothing
+    _ <- forkIO (parseArgs >>= startWithArgs startMVar)
+    takeMVar stopMVar >> exitSuccess
 
 
-recvFunction :: MVar (Int) -> IO ()
-recvFunction mi = do
-    putStrLn "Waiting.. "
-    threadDelay 1000000
-    hFlush stdout
-    mv <- tryTakeMVar mi
-    case mv of 
-        Just val -> do
-            putStrLn $ "W: Interrupt Received. Killing the process."
-            hFlush stdout
-            return ()
-        Nothing -> recvFunction mi
+startWithArgs :: MVar (Int) -> (Maybe (Int, [(String, Int)], Int)) -> IO ()
+startWithArgs startMVar urbArgs
+    | isJust urbArgs = startURB (fromJust urbArgs) startMVar
+    | otherwise      = return ()
