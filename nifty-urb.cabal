@@ -24,5 +24,8 @@ executable nifty-urb
                        , unix
                        , network >= 2.6.0.2
                        , bytestring >= 0.10.0.2
+                       , BoundedChan >= 1.0.3.0
+                       , containers >= 0.5.0.0
+                       , stm >= 2.4.3
   hs-source-dirs:      src
   default-language:    Haskell2010

@@ -1,4 +1,4 @@
 module Nifty.BEB where
 
 
-import Nifty.PerfectLink
+import Nifty.PointToPointLink
