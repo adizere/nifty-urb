@@ -159,3 +159,30 @@ addEgressMessagesToFw []     fw     = fw
 addEgressMessagesToFw (m:xm) fw     = addEgressMessagesToFw xm newFw
     where
         newFw = S.insert m fw
+
+
+
+
+-- Skeleton for updated version:
+-- messageCollector :: Char                                    -- process ID
+--                     -> BoundedChan (L.ByteString)           -- egress channel
+--                     -> [Socket]                             -- egress sockets
+--                     -> TChan (L.ByteString)                 -- ingress channel
+--                     -> M.Map (L.ByteString) S.Set(Word8)    -- histories
+--                     -> S.Set (L.ByteString)                 -- forward
+--                     -> IO ()
+-- messageCollector pId eChan eSockets iChan histories fw = do
+--     allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
+--     let newHistories = updateHistories histories allIMsg
+
+
+
+-- -- use Map.unionWith to create the union of local histories and remote histories
+-- updateHistories :: M.Map (L.ByteString) L.ByteString
+--                    -> [L.ByteString]
+--                    -> M.Map (L.ByteString) L.ByteString
+-- updateHistories histories []        = histories
+-- updateHistories histories (m:xm)    = updateHistories newHistories xm
+--     where
+--         localHist = M.findWithDefault S.empty m histories
+--         updateHistories = M.
