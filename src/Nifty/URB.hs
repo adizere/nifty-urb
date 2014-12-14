@@ -186,3 +186,14 @@ addEgressMessagesToFw (m:xm) fw     = addEgressMessagesToFw xm newFw
 --     where
 --         localHist = M.findWithDefault S.empty m histories
 --         updateHistories = M.
+
+-- pseudo algo:
+-- (msg, src, rHistory) <- read iChan
+-- histories(msg) union with rHistory
+-- if (procId notElem rHistory) || (src notElem rHistory)
+--     then fw = fw union {msg, destination=src}
+-- if |histories(msg)| >= 3
+--     then deliver msg
+
+-- msg <- read eChan
+-- histories(msg) = {}
