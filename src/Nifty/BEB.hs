@@ -11,14 +11,14 @@ import qualified Data.ByteString.Lazy.Char8 as C
 import Control.Exception
 
 
-broadcastOnce :: S.Set (L.ByteString, Char)
-                 -> Char 
+broadcastOnce :: S.Set (L.ByteString)       -- fw
+                 -> Char
                  -> [Socket]
                  -> IO ()
 broadcastOnce fw pId eSockets = do
-    if S.null fw 
+    if S.null fw
         then return ()
-        else do 
+        else do
             _ <- mapM (\s -> (sendWithError s msg) `catch` hndl) eSockets
             putStrLn $ "Sending message " ++ (show msg) ++ " to all"
             broadcastOnce tailFw pId eSockets
@@ -32,12 +32,12 @@ sendWithError sock msg = do
     sendAll sock msg
 
 
-hndl :: IOError -> IO ()  
-hndl _ = 
+hndl :: IOError -> IO ()
+hndl _ =
     -- putStrLn $ "Error sending on socket; some processes are down? " ++( show e)
     return ()
 
 
-assembleMessage :: (L.ByteString, Char) -> Char -> L.ByteString
-assembleMessage (seqNr, origin) procId =
-    C.append seqNr $ C.pack (' ':origin:' ':procId:[])
+assembleMessage :: L.ByteString -> Char -> L.ByteString
+assembleMessage pckdMsg procId =
+    C.append pckdMsg $ C.pack (' ':procId:[])

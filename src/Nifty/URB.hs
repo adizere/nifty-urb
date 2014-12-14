@@ -29,28 +29,28 @@ startURB :: (Int, [(String, Int)], Int) -> MVar (Int) -> IO ()
 startURB (procId, ipsPorts, msgCnt) stMVar = do
     putStrLn "Waiting.. "
     eChan <- setupNetwork procId ipsPorts
-    takeMVar stMVar >> startURBroadcast eChan msgCnt 1
+    takeMVar stMVar >> startURBroadcast eChan procId msgCnt 1
 
 
-startURBroadcast :: BoundedChan (Int) -> Int -> Int -> IO ()
-startURBroadcast eChan (-1) seqNr = do
+startURBroadcast :: BoundedChan (L.ByteString) -> Int -> Int -> Int -> IO ()
+startURBroadcast eChan procId (-1) seqNr = do
     putStrLn $ "I am broadcasting.. " ++ (show seqNr)
-    writeChan eChan $ getEgressMessage seqNr
-    startURBroadcast eChan (-1) (seqNr+1)
+    writeChan eChan $ getEgressMessage seqNr procId
+    startURBroadcast eChan procId (-1) (seqNr+1)
 
-startURBroadcast _ 0 _ = return ()
+startURBroadcast _ _ 0 _ = return ()
 
-startURBroadcast eChan msgCnt seqNr = do
+startURBroadcast eChan procId msgCnt seqNr = do
     putStrLn $ "I am broadcasting.. " ++ (show seqNr)
-    writeChan eChan $ getEgressMessage seqNr
-    startURBroadcast eChan (msgCnt-1) (seqNr+1)
+    writeChan eChan $ getEgressMessage seqNr procId
+    startURBroadcast eChan procId (msgCnt-1) (seqNr+1)
 
-getEgressMessage :: Int -> Int
-getEgressMessage seqNr =
-    seqNr
+getEgressMessage :: Int -> Int -> L.ByteString
+getEgressMessage seqNr pId =
+    C.pack (show seqNr ++ show pId)
 
 
-setupNetwork :: Int -> [(String, Int)] -> IO (BoundedChan Int)
+setupNetwork :: Int -> [(String, Int)] -> IO (BoundedChan L.ByteString)
 setupNetwork pId ipsPorts =
     establishPTPLinks pAddr foreignAddresses
         >>= setupMessageCollector (head $ show pId)
@@ -61,19 +61,19 @@ setupNetwork pId ipsPorts =
 
 setupMessageCollector :: Char
                          -> (TChan L.ByteString, [Socket])
-                         -> IO (BoundedChan Int)
+                         -> IO (BoundedChan L.ByteString)
 setupMessageCollector pId (iChan, eSockets) = do
-    eChan <- newBoundedChan egressChanLength :: IO (BoundedChan Int)
+    eChan <- newBoundedChan egressChanLength :: IO (BoundedChan L.ByteString)
     _ <- forkIO (messageCollector pId eChan eSockets iChan M.empty S.empty)
     return eChan
 
 
 messageCollector :: Char                                    -- process ID
-                    -> BoundedChan (Int)                    -- egress channel
+                    -> BoundedChan (L.ByteString)                    -- egress channel
                     -> [Socket]                             -- egress sockets
                     -> TChan (L.ByteString)                 -- ingress channel
-                    -> M.Map (L.ByteString, Char) [Char]    -- ack
-                    -> S.Set (L.ByteString, Char)           -- forward
+                    -> M.Map (L.ByteString) [Char]    -- ack
+                    -> S.Set (L.ByteString)           -- forward
                     -> IO ()
 messageCollector pId eChan eSockets iChan ack fw = do
     allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
@@ -84,42 +84,42 @@ messageCollector pId eChan eSockets iChan ack fw = do
     _ <- mapM deliverURB toDeliver
     allEMsg <- collectAvailableEMsg eChan [] egressChanLength
     putStrLn $ "Available egress messages: " ++ (show allEMsg)
-    let newerFw = addEgressMessagesToFw allEMsg newFw pId
+    let newerFw = addEgressMessagesToFw allEMsg newFw
     broadcastOnce newerFw pId eSockets
     threadDelay 10000000
     messageCollector pId eChan eSockets iChan newAck newerFw
 
 
 readyForDelivery :: [L.ByteString]
-                    -> M.Map (L.ByteString, Char) [Char]
-                    -> S.Set (L.ByteString, Char)
+                    -> M.Map (L.ByteString) [Char]
+                    -> S.Set (L.ByteString)
                     -> [L.ByteString]                       -- accumulator
                     -> ( [L.ByteString]
-                        , M.Map (L.ByteString, Char) [Char]
-                        , S.Set (L.ByteString, Char) )
+                        , M.Map (L.ByteString) [Char]
+                        , S.Set (L.ByteString) )
 readyForDelivery []     ack fw accum = (accum, ack, fw)
 readyForDelivery (m:xm) ack fw accum =
     if (enoughAck == True)
         then readyForDelivery xm newAckDelete newFwDelete (m:accum)
         else readyForDelivery xm newAckInsert newFwInsert accum
     where
-        (seqNr, origin, src) = bytestringToMessage m
-        ackForM = M.findWithDefault [] (seqNr, origin) ack
+        (pckdMsg, src) = bytestringToMessage m
+        ackForM = M.findWithDefault [] pckdMsg ack
         enoughAck = if (length ackForM + 1) >= 3
                         then True
                         else False
-        newAckDelete = M.delete (seqNr, origin) ack
+        newAckDelete = M.delete pckdMsg ack
         newAckInsert =
             if notElem src ackForM
-                then M.insert (seqNr, origin) (src:ackForM) ack
+                then M.insert pckdMsg (src:ackForM) ack
                 else ack
-        newFwInsert = S.insert (seqNr, origin) fw
-        newFwDelete = S.delete (seqNr, origin) fw
+        newFwInsert = S.insert pckdMsg fw
+        newFwDelete = S.delete pckdMsg fw
 
 
-bytestringToMessage :: L.ByteString -> (L.ByteString, Char, Char)
+bytestringToMessage :: L.ByteString -> (L.ByteString, Char)
 bytestringToMessage bs =
-    (C.takeWhile (\c -> c /= ' ') bs, C.last $ w!!1, C.last $ w!!2)
+    (C.takeWhile (\c -> c /= ' ') bs, C.last $ w!!1)
     where
         w = C.words bs
 
@@ -128,24 +128,20 @@ collectAvailableIMsg :: TChan (L.ByteString)    -- input channel
                         -> [L.ByteString]       -- accumulator
                         -> Int                  -- limit
                         -> IO ([L.ByteString])
-collectAvailableIMsg _ acc 0 =
-    return acc
-
-collectAvailableIMsg iChan acc limit = do
+collectAvailableIMsg _     acc 0        = return acc
+collectAvailableIMsg iChan acc limit    = do
     maybeIMsg <- atomically $ tryReadTChan iChan
     case maybeIMsg of
         Just iMsg   -> collectAvailableIMsg iChan (iMsg:acc) (limit-1)
         Nothing     -> return acc
 
 
-collectAvailableEMsg :: BoundedChan (Int)
-                        -> [Int]
+collectAvailableEMsg :: BoundedChan (L.ByteString)
+                        -> [L.ByteString]
                         -> Int
-                        -> IO ([Int])
-collectAvailableEMsg _ acc 0 =
-    return acc
-
-collectAvailableEMsg eChan acc limit = do
+                        -> IO ([L.ByteString])
+collectAvailableEMsg _     acc 0        = return acc
+collectAvailableEMsg eChan acc limit    = do
     maybeEMsg <- tryReadChan eChan
     case maybeEMsg of
         Just eMsg   -> collectAvailableEMsg eChan (eMsg:acc) (limit-1)
@@ -156,15 +152,10 @@ deliverURB :: L.ByteString -> IO ()
 deliverURB msg = putStrLn $ "deliveree: " ++ (show $ L.take 3 msg)
 
 
-addEgressMessagesToFw :: [Int]
-                         -> S.Set (L.ByteString, Char)
-                         -> Char
-                         -> S.Set (L.ByteString, Char)
-addEgressMessagesToFw []     fw _ =
-    fw
-
-addEgressMessagesToFw (m:xm) fw origin =
-    addEgressMessagesToFw xm newFw origin
+addEgressMessagesToFw :: [L.ByteString]
+                         -> S.Set (L.ByteString)    -- accumulator
+                         -> S.Set (L.ByteString)
+addEgressMessagesToFw []     fw     = fw
+addEgressMessagesToFw (m:xm) fw     = addEgressMessagesToFw xm newFw
     where
-        seqNr = C.pack $ show m
-        newFw = S.insert (seqNr, origin) fw
+        newFw = S.insert m fw
