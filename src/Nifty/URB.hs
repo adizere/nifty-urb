@@ -42,7 +42,7 @@ startURBroadcast _ 0 _ = return ()
 
 startURBroadcast eChan msgCnt seqNr = do
     putStrLn $ "I am broadcasting.. " ++ (show seqNr)
-    writeChan eChan $ getEgressMessage seqNr 
+    writeChan eChan $ getEgressMessage seqNr
     startURBroadcast eChan (msgCnt-1) (seqNr+1)
 
 getEgressMessage :: Int -> Int
@@ -52,13 +52,14 @@ getEgressMessage seqNr =
 
 setupNetwork :: Int -> [(String, Int)] -> IO (BoundedChan Int)
 setupNetwork pId ipsPorts =
-    establishPTPLinks pAddr foreignAddresses >>= setupMessageCollector (head $ show pId)
+    establishPTPLinks pAddr foreignAddresses
+        >>= setupMessageCollector (head $ show pId)
     where
         foreignAddresses = [ ipsPorts!!fId | fId <- [0..4], fId /= (pId-1) ]
         pAddr = ipsPorts!!(pId-1)
 
 
-setupMessageCollector :: Char 
+setupMessageCollector :: Char
                          -> (TChan L.ByteString, [Socket])
                          -> IO (BoundedChan Int)
 setupMessageCollector pId (iChan, eSockets) = do
@@ -67,12 +68,12 @@ setupMessageCollector pId (iChan, eSockets) = do
     return eChan
 
 
-messageCollector :: Char                                   -- process ID  
-                    -> BoundedChan (Int)              -- egress channel
+messageCollector :: Char                                    -- process ID
+                    -> BoundedChan (Int)                    -- egress channel
                     -> [Socket]                             -- egress sockets
                     -> TChan (L.ByteString)                 -- ingress channel
-                    -> M.Map (L.ByteString, Char) [Char]  -- ack
-                    -> S.Set (L.ByteString, Char)          -- forward
+                    -> M.Map (L.ByteString, Char) [Char]    -- ack
+                    -> S.Set (L.ByteString, Char)           -- forward
                     -> IO ()
 messageCollector pId eChan eSockets iChan ack fw = do
     allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
@@ -108,8 +109,8 @@ readyForDelivery (m:xm) ack fw accum =
                         then True
                         else False
         newAckDelete = M.delete (seqNr, origin) ack
-        newAckInsert = 
-            if notElem src ackForM 
+        newAckInsert =
+            if notElem src ackForM
                 then M.insert (seqNr, origin) (src:ackForM) ack
                 else ack
         newFwInsert = S.insert (seqNr, origin) fw
@@ -117,7 +118,7 @@ readyForDelivery (m:xm) ack fw accum =
 
 
 bytestringToMessage :: L.ByteString -> (L.ByteString, Char, Char)
-bytestringToMessage bs = 
+bytestringToMessage bs =
     (C.takeWhile (\c -> c /= ' ') bs, C.last $ w!!1, C.last $ w!!2)
     where
         w = C.words bs
@@ -127,7 +128,7 @@ collectAvailableIMsg :: TChan (L.ByteString)    -- input channel
                         -> [L.ByteString]       -- accumulator
                         -> Int                  -- limit
                         -> IO ([L.ByteString])
-collectAvailableIMsg _ acc 0 = 
+collectAvailableIMsg _ acc 0 =
     return acc
 
 collectAvailableIMsg iChan acc limit = do
@@ -137,11 +138,11 @@ collectAvailableIMsg iChan acc limit = do
         Nothing     -> return acc
 
 
-collectAvailableEMsg :: BoundedChan (Int) 
+collectAvailableEMsg :: BoundedChan (Int)
                         -> [Int]
                         -> Int
                         -> IO ([Int])
-collectAvailableEMsg _ acc 0 = 
+collectAvailableEMsg _ acc 0 =
     return acc
 
 collectAvailableEMsg eChan acc limit = do
@@ -155,11 +156,11 @@ deliverURB :: L.ByteString -> IO ()
 deliverURB msg = putStrLn $ "deliveree: " ++ (show $ L.take 3 msg)
 
 
-addEgressMessagesToFw :: [Int] 
+addEgressMessagesToFw :: [Int]
                          -> S.Set (L.ByteString, Char)
                          -> Char
                          -> S.Set (L.ByteString, Char)
-addEgressMessagesToFw []     fw _ = 
+addEgressMessagesToFw []     fw _ =
     fw
 
 addEgressMessagesToFw (m:xm) fw origin =
