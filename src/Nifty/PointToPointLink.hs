@@ -2,7 +2,6 @@ module Nifty.PointToPointLink where
 
 
 import qualified Data.ByteString.Lazy       as L
-import qualified Data.ByteString.Lazy.Char8 as C
 import Control.Concurrent.STM.TChan
 import Network.Socket                   hiding (recv)
 import Network.Socket.ByteString.Lazy   (recv)
@@ -51,5 +50,5 @@ channeliseIngressPTPMessages iChan sock =
     forever $ do
         msg <- recv sock 256
         putStrLn $ "Got a message lol " ++ (show msg)
-        atomically $ writeTChan iChan C.empty
+        atomically $ writeTChan iChan msg
         return ()

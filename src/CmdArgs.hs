@@ -22,19 +22,14 @@ parseArgs = do
         else
             return $ Just (fromJust procId, fromJust ipPorts, fromJust msgCount)
 
-    -- let mProcId = maybeRead (head argz) :: Maybe Int
-    -- case mProcId of 
-    --  Just procId -> do
-    --      let list = parseIpsPorts $ drop 1 argz
-    --      return $ Just (procId, list)
-    --  otherwise -> do
-    --      putStrLn "Error parsing args: invalid process id (arg #0)!"
-    --      return Nothing
-
 
 parseProcId :: [String] -> Maybe Int
-parseProcId argz =
-    maybeRead (head argz)
+parseProcId argz
+    | (isJust val) && (from >= 1) && (from <= 5) = val
+    | otherwise = Nothing
+    where
+        val = maybeRead (head argz)
+        from = fromJust val
 
 
 parseIpsPorts :: [String] -> [(String, Int)] -> Maybe [(String, Int)]
