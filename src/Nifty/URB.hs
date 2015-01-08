@@ -11,10 +11,12 @@ import Control.Concurrent.MVar              (takeMVar, MVar)
 import Control.Concurrent                   (forkIO)
 import Control.Monad.STM                    (atomically)
 import Network.Socket                       hiding (recv)
+import Data.Maybe
 import qualified Data.ByteString.Lazy       as L
+import qualified Data.ByteString.Lazy.Char8 as C
 import qualified Data.Map.Strict            as M
 import qualified Data.Set                   as S
-import qualified Data.ByteString.Lazy.Char8 as C
+import qualified Data.Word                  as W
 
 
 egressChanLength :: Int
@@ -68,58 +70,9 @@ setupMessageCollector pId (iChan, eSockets) = do
     return eChan
 
 
-messageCollector :: Char                                    -- process ID
-                    -> BoundedChan (L.ByteString)                    -- egress channel
-                    -> [Socket]                             -- egress sockets
-                    -> TChan (L.ByteString)                 -- ingress channel
-                    -> M.Map (L.ByteString) [Char]    -- ack
-                    -> S.Set (L.ByteString)           -- forward
-                    -> IO ()
-messageCollector pId eChan eSockets iChan ack fw = do
-    allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
-    putStrLn $ "Available igress messages: " ++ (show allIMsg)
-    let (toDeliver, newAck, newFw) = readyForDelivery allIMsg ack fw []
-    putStrLn $ "ACK = " ++ (show newAck)
-    putStrLn $ "FW = " ++ (show newFw)
-    _ <- mapM deliverURB toDeliver
-    allEMsg <- collectAvailableEMsg eChan [] egressChanLength
-    putStrLn $ "Available egress messages: " ++ (show allEMsg)
-    let newerFw = addEgressMessagesToFw allEMsg newFw
-    broadcastOnce newerFw pId eSockets
-    threadDelay 10000000
-    messageCollector pId eChan eSockets iChan newAck newerFw
-
-
-readyForDelivery :: [L.ByteString]
-                    -> M.Map (L.ByteString) [Char]
-                    -> S.Set (L.ByteString)
-                    -> [L.ByteString]                       -- accumulator
-                    -> ( [L.ByteString]
-                        , M.Map (L.ByteString) [Char]
-                        , S.Set (L.ByteString) )
-readyForDelivery []     ack fw accum = (accum, ack, fw)
-readyForDelivery (m:xm) ack fw accum =
-    if (enoughAck == True)
-        then readyForDelivery xm newAckDelete newFwDelete (m:accum)
-        else readyForDelivery xm newAckInsert newFwInsert accum
-    where
-        (pckdMsg, src) = bytestringToMessage m
-        ackForM = M.findWithDefault [] pckdMsg ack
-        enoughAck = if (length ackForM + 1) >= 3
-                        then True
-                        else False
-        newAckDelete = M.delete pckdMsg ack
-        newAckInsert =
-            if notElem src ackForM
-                then M.insert pckdMsg (src:ackForM) ack
-                else ack
-        newFwInsert = S.insert pckdMsg fw
-        newFwDelete = S.delete pckdMsg fw
-
-
-bytestringToMessage :: L.ByteString -> (L.ByteString, Char)
+bytestringToMessage :: L.ByteString -> (L.ByteString, Char, L.ByteString)
 bytestringToMessage bs =
-    (C.takeWhile (\c -> c /= ' ') bs, C.last $ w!!1)
+    (C.takeWhile (\c -> c /= ' ') bs, C.last $ w!!1, w!!2)
     where
         w = C.words bs
 
@@ -161,21 +114,41 @@ addEgressMessagesToFw (m:xm) fw     = addEgressMessagesToFw xm newFw
         newFw = S.insert m fw
 
 
-
-
 -- Skeleton for updated version:
--- messageCollector :: Char                                    -- process ID
---                     -> BoundedChan (L.ByteString)           -- egress channel
---                     -> [Socket]                             -- egress sockets
---                     -> TChan (L.ByteString)                 -- ingress channel
---                     -> M.Map (L.ByteString) S.Set(Word8)    -- histories
---                     -> S.Set (L.ByteString)                 -- forward
---                     -> IO ()
--- messageCollector pId eChan eSockets iChan histories fw = do
---     allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
---     let newHistories = updateHistories histories allIMsg
+messageCollector    :: Char                                 -- process ID
+                    -> BoundedChan (L.ByteString)           -- egress channel
+                    -> [Socket]                             -- egress sockets
+                    -> TChan (L.ByteString)                 -- ingress channel
+                    -> M.Map (L.ByteString) L.ByteString    -- histories
+                    -> S.Set (L.ByteString)                 -- forward
+                    -> IO ()
+messageCollector pId eChan eSockets iChan histories fw = do
+    allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
+    putStrLn $ "Fetched some ingress messages: " ++ (show allIMsg)
+    let (newHistories, readyForDelivery) = updateHistories histories allIMsg []
+    return ()
 
 
+updateHistories :: M.Map (L.ByteString) L.ByteString    -- current histories
+                -> [L.ByteString]                       -- list of ingress msgs
+                -> [L.ByteString]                       -- accum for messages
+                -> (M.Map (L.ByteString) L.ByteString, [L.ByteString])
+updateHistories cHist []     accum  = (cHist, accum)
+updateHistories cHist (m:xm) accum  =
+    if (isJust mValue) && (L.length value >= 3)
+        then updateHistories nHist xm $ key:accum
+        else updateHistories nHist xm accum
+    where
+        (seqNr, origin, msgHist) = bytestringToMessage m
+        key = C.snoc seqNr origin
+        (mValue, nHist) = M.updateLookupWithKey mapValueConcat key cHist
+        value = fromJust mValue
+        mapValueConcat k mOldHist =
+            -- concatenate the old and the new message history
+            Just $ L.append mOldHist $ L.concatMap (\v -> if L.elem v mOldHist
+                                                            then L.empty
+                                                            else L.singleton v)
+                                                   msgHist
 
 -- -- use Map.unionWith to create the union of local histories and remote histories
 -- updateHistories :: M.Map (L.ByteString) L.ByteString
