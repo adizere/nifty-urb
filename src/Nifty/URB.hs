@@ -3,6 +3,7 @@ module Nifty.URB where
 
 import Nifty.PointToPointLink
 import Nifty.BEB
+import Nifty.Message
 
 import Control.Concurrent.STM.TChan
 import Control.Concurrent.BoundedChan
@@ -12,12 +13,15 @@ import Control.Concurrent                   (forkIO)
 import Control.Monad.STM                    (atomically)
 import Network.Socket                       hiding (recv)
 import Data.Maybe
-import qualified Data.ByteString.Lazy       as L
-import qualified Data.ByteString.Lazy.Char8 as C
-import qualified Data.Map.Strict            as M
-import qualified Data.Set                   as S
-import qualified Data.Word                  as W
+import qualified Data.ByteString        as L
+import qualified Data.ByteString.Char8  as C
+import qualified Data.Set               as S
+import qualified Data.Map.Strict        as M
+import qualified Data.HashTable.IO      as H
 
+
+-- type alias
+type HashTable k v = H.CuckooHashTable k v
 
 egressChanLength :: Int
 egressChanLength = 10
@@ -35,21 +39,17 @@ startURB (procId, ipsPorts, msgCnt) stMVar = do
 
 
 startURBroadcast :: BoundedChan (L.ByteString) -> Int -> Int -> Int -> IO ()
+startURBroadcast _ _ 0 _ = return ()
+-- broadcasts indefinitely
 startURBroadcast eChan procId (-1) seqNr = do
     putStrLn $ "I am broadcasting.. " ++ (show seqNr)
-    writeChan eChan $ getEgressMessage seqNr procId
+    writeChan eChan $ serializeOriginMessageContent seqNr procId
     startURBroadcast eChan procId (-1) (seqNr+1)
-
-startURBroadcast _ _ 0 _ = return ()
-
-startURBroadcast eChan procId msgCnt seqNr = do
+-- broadcasts until the msgCnt limit is reached
+startURBroadcast eChan procId msgCnt seqNr  = do
     putStrLn $ "I am broadcasting.. " ++ (show seqNr)
-    writeChan eChan $ getEgressMessage seqNr procId
+    writeChan eChan $ serializeOriginMessageContent seqNr procId
     startURBroadcast eChan procId (msgCnt-1) (seqNr+1)
-
-getEgressMessage :: Int -> Int -> L.ByteString
-getEgressMessage seqNr pId =
-    C.pack (show seqNr ++ show pId)
 
 
 setupNetwork :: Int -> [(String, Int)] -> IO (BoundedChan L.ByteString)
@@ -66,15 +66,11 @@ setupMessageCollector :: Char
                          -> IO (BoundedChan L.ByteString)
 setupMessageCollector pId (iChan, eSockets) = do
     eChan <- newBoundedChan egressChanLength :: IO (BoundedChan L.ByteString)
-    _ <- forkIO (messageCollector pId eChan eSockets iChan M.empty S.empty)
+    fw <- H.new :: IO (HashTable L.ByteString L.ByteString)
+    dlv <- H.new :: IO (HashTable Char L.ByteString)
+    mapM_ (\key -> H.insert dlv key L.empty) ['1'..'5']
+    _ <- forkIO (messageCollector pId eChan eSockets iChan M.empty fw dlv)
     return eChan
-
-
-bytestringToMessage :: L.ByteString -> (L.ByteString, Char, L.ByteString)
-bytestringToMessage bs =
-    (C.takeWhile (\c -> c /= ' ') bs, C.last $ w!!1, w!!2)
-    where
-        w = C.words bs
 
 
 collectAvailableIMsg :: TChan (L.ByteString)    -- input channel
@@ -105,68 +101,131 @@ deliverURB :: L.ByteString -> IO ()
 deliverURB msg = putStrLn $ "deliveree: " ++ (show $ L.take 3 msg)
 
 
-addEgressMessagesToFw :: [L.ByteString]
-                         -> S.Set (L.ByteString)    -- accumulator
-                         -> S.Set (L.ByteString)
-addEgressMessagesToFw []     fw     = fw
-addEgressMessagesToFw (m:xm) fw     = addEgressMessagesToFw xm newFw
-    where
-        newFw = S.insert m fw
-
-
--- Skeleton for updated version:
 messageCollector    :: Char                                 -- process ID
                     -> BoundedChan (L.ByteString)           -- egress channel
                     -> [Socket]                             -- egress sockets
                     -> TChan (L.ByteString)                 -- ingress channel
                     -> M.Map (L.ByteString) L.ByteString    -- histories
-                    -> S.Set (L.ByteString)                 -- forward
+                    -> HashTable L.ByteString L.ByteString  -- forward
+                    -> HashTable Char L.ByteString          -- delivered
                     -> IO ()
-messageCollector pId eChan eSockets iChan histories fw = do
+messageCollector pId eChan eSockets iChan histories fw dlv = do
     allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
     putStrLn $ "Fetched some ingress messages: " ++ (show allIMsg)
-    let (newHistories, readyForDelivery) = updateHistories histories allIMsg []
+    let (nHistories, readyForDelivery, addToFw) =
+            updateHistories pId histories allIMsg [] []
+    putStrLn $ "Will add to forward the following " ++ show (addToFw)
+    handleDelivery readyForDelivery dlv
+    allEMsg <- collectAvailableEMsg eChan [] egressChanLength
+    putStrLn $ "Collected some egress messages: " ++ (show allEMsg)
+    let nnHistories = addEMsgsToHistories allEMsg nHistories
+    putStrLn $ "Histories looks as follows: " ++ show (nnHistories)
+    updateForward allEMsg addToFw fw
+    handleBroadcast fw pId eSockets
+    threadDelay 10000000
+    messageCollector pId eChan eSockets iChan nnHistories fw dlv
+
+
+updateHistories :: Char                                 -- process ID
+                -> M.Map (L.ByteString) L.ByteString    -- current histories
+                -> [L.ByteString]                       -- list of ingress msgs
+                -> [L.ByteString]                       -- ready for delivery
+                -> [L.ByteString]                       -- should forward
+                -> (M.Map (L.ByteString) L.ByteString,
+                    [L.ByteString],
+                    [L.ByteString])
+updateHistories _   histories []     dv fw = (histories, dv, fw)
+updateHistories pId histories (m:xm) dv fw =
+    updateHistories pId newHistories xm newDv newFw
+    where
+        (content, source, oldRemoteMsgHist) = deserializeMessage m
+        key = content
+        -- if the source is not part of the remote history, add it
+        remoteMsgHist = if C.notElem source oldRemoteMsgHist
+                            then C.cons source oldRemoteMsgHist
+                            else oldRemoteMsgHist
+        localMsgHist = M.findWithDefault L.empty key histories
+        -- compute the concatenated message histories
+        ccMsgHistories = L.sort $ L.append localMsgHist $
+                            L.concatMap (\v -> if L.elem v localMsgHist
+                                                    then L.empty
+                                                    else L.singleton v)
+                            remoteMsgHist
+        newHistories =
+            M.alter (\_ -> Just ccMsgHistories) key histories
+        -- messages ready for delivery
+        newDv = if L.length ccMsgHistories >= 3
+                            then content:dv
+                            else dv
+        -- messages that shall be forwarded
+        newFwMessage = serializeForwardedMessage content pId ccMsgHistories
+        newFw = if (C.notElem pId ccMsgHistories)
+                   || (C.notElem source oldRemoteMsgHist)
+                   || (oldRemoteMsgHist /= ccMsgHistories)
+                   || (localMsgHist /= ccMsgHistories)
+                        then newFwMessage:fw
+                        else fw
+
+
+addEMsgsToHistories :: [L.ByteString]                       -- egress messages
+                    -> M.Map (L.ByteString) L.ByteString    -- current histories
+                    -> M.Map (L.ByteString) L.ByteString    -- updated histories
+addEMsgsToHistories []     histories = histories
+addEMsgsToHistories (m:xm) histories =
+    addEMsgsToHistories xm newHistories
+    where
+        key = m
+        value = L.empty
+        newHistories = M.insert key value histories
+
+
+updateForward ::
+    [L.ByteString]                              -- new egress messages
+    -> [L.ByteString]                           -- ingress msgs to be forwarded
+    -> HashTable L.ByteString L.ByteString      -- current fw
+    -> IO ()
+updateForward [] [] fw = return ()
+updateForward em im fw = do
+    putStrLn $ "Adding to forward the following e " ++ show (em)
+    mapM_ (\m -> H.insert fw m L.empty) em
+    putStrLn $ "Adding to forward the following i " ++ show (im)
+    mapM_ (\m -> do
+                    let (con, _, hist) = deserializeMessage m
+                    H.insert fw con hist) im
     return ()
 
 
-updateHistories :: M.Map (L.ByteString) L.ByteString    -- current histories
-                -> [L.ByteString]                       -- list of ingress msgs
-                -> [L.ByteString]                       -- accum for messages
-                -> (M.Map (L.ByteString) L.ByteString, [L.ByteString])
-updateHistories cHist []     accum  = (cHist, accum)
-updateHistories cHist (m:xm) accum  =
-    if (isJust mValue) && (L.length value >= 3)
-        then updateHistories nHist xm $ key:accum
-        else updateHistories nHist xm accum
+handleBroadcast ::
+    HashTable L.ByteString L.ByteString         -- current forward
+    -> Char                                     -- process id
+    -> [Socket]                                 -- all egress sockets
+    -> IO ()
+handleBroadcast forward pId eSockets = do
+    H.mapM_ (\(k, v) -> broadcastOnce (k,v) pId eSockets
+                        >> if L.length v == 5
+                            then H.delete forward k
+                            else return ()) forward
+    return ()
+
+
+handleDelivery ::
+    [L.ByteString]
+    -> HashTable Char L.ByteString
+    -> IO ()
+handleDelivery toDlv devRecords = do
+    mapM_ (\m -> do
+                    let (seqNr, origin) = splitContent m
+                    mlSeqNr <- H.lookup devRecords origin
+                    case mlSeqNr
+                        of  Just lastSeq ->
+                                if seqNr > lastSeq
+                                    then do
+                                        putStrLn $ " * " ++ (show seqNr) ++ " " ++ (show origin)
+                                        H.insert devRecords origin seqNr
+                                        return ()
+                                    else return ()
+                            Nothing -> return ()
+          ) toDlv
+    return ()
     where
-        (seqNr, origin, msgHist) = bytestringToMessage m
-        key = C.snoc seqNr origin
-        (mValue, nHist) = M.updateLookupWithKey mapValueConcat key cHist
-        value = fromJust mValue
-        mapValueConcat k mOldHist =
-            -- concatenate the old and the new message history
-            Just $ L.append mOldHist $ L.concatMap (\v -> if L.elem v mOldHist
-                                                            then L.empty
-                                                            else L.singleton v)
-                                                   msgHist
-
--- -- use Map.unionWith to create the union of local histories and remote histories
--- updateHistories :: M.Map (L.ByteString) L.ByteString
---                    -> [L.ByteString]
---                    -> M.Map (L.ByteString) L.ByteString
--- updateHistories histories []        = histories
--- updateHistories histories (m:xm)    = updateHistories newHistories xm
---     where
---         localHist = M.findWithDefault S.empty m histories
---         updateHistories = M.
-
--- pseudo algo:
--- (msg, src, rHistory) <- read iChan
--- histories(msg) union with rHistory
--- if (procId notElem rHistory) || (src notElem rHistory)
---     then fw = fw union {msg, destination=src}
--- if |histories(msg)| >= 3
---     then deliver msg
-
--- msg <- read eChan
--- histories(msg) = {}
+        splitContent cn = fromJust $ deserializeMessageContent cn

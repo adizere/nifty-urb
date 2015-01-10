@@ -1,10 +1,10 @@
 module Nifty.PointToPointLink where
 
 
-import qualified Data.ByteString.Lazy       as L
+import qualified Data.ByteString       as L
 import Control.Concurrent.STM.TChan
 import Network.Socket                   hiding (recv)
-import Network.Socket.ByteString.Lazy   (recv)
+import Network.Socket.ByteString   (recv)
 import Control.Monad.STM                (atomically)
 import Control.Monad                    (forever)
 import Control.Concurrent               (forkIO)
@@ -32,13 +32,13 @@ getEgressSocket (fIp, fPort) = do
 -- binds a socket and writes every received message to a Chan
 bindIngressSocket :: String -> Int -> TChan (L.ByteString) -> IO ()
 bindIngressSocket ip port iChan = bracket bindMe close handler
-    where 
+    where
         bindMe = do
-            (serveraddr:_) <- getAddrInfo 
-                                (Just (defaultHints 
+            (serveraddr:_) <- getAddrInfo
+                                (Just (defaultHints
                                         {addrFlags = [ AI_ADDRCONFIG
                                                      , AI_NUMERICHOST]}))
-                                (Just ip) 
+                                (Just ip)
                                 (Just $ show port)
             sock <- socket (addrFamily serveraddr) Datagram defaultProtocol
             bindSocket sock (addrAddress serveraddr) >> return sock
