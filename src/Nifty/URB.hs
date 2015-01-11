@@ -8,6 +8,7 @@ import Nifty.DeliveryGuard
 
 import Text.Printf
 import System.Random
+import System.IO
 import Control.Concurrent.STM.TChan
 import Control.Concurrent.BoundedChan
 import Control.Concurrent                   (threadDelay)
@@ -32,34 +33,44 @@ egressChanLength = 10
 iMsgCollectorLimit :: Int
 iMsgCollectorLimit = 100
 
+getOutputFile :: Int -> String
+getOutputFile pId =
+    "da_proc_" ++ (show pId) ++ ".out"
+
 
 startURB :: (Int, [(String, Int)], Int) -> MVar (Int) -> IO ()
 startURB (procId, ipsPorts, msgCnt) stMVar = do
-    -- putStrLn "Waiting.. "
-    eChan <- setupNetwork procId ipsPorts
-    takeMVar stMVar >> startURBroadcast eChan procId msgCnt 1
+    handle <- openFile (getOutputFile procId) WriteMode
+    eChan <- setupNetwork procId ipsPorts handle
+    takeMVar stMVar >> startURBroadcast eChan procId msgCnt 1 handle
 
 
-startURBroadcast :: BoundedChan (L.ByteString) -> Int -> Int -> Int -> IO ()
-startURBroadcast _ _ 0 _ = return ()
+startURBroadcast ::
+    BoundedChan (L.ByteString)
+    -> Int
+    -> Int
+    -> Int
+    -> Handle
+    -> IO ()
+startURBroadcast _ _ 0 _ _ = return ()
 -- broadcasts indefinitely
-startURBroadcast eChan procId (-1) seqNr = do
+startURBroadcast eChan procId (-1) seqNr handle = do
     lim <- fetchMsgLimit 300
     let nSeqNr = seqNr + lim
     let nSeqNrByteSt = C.pack (show seqNr ++ "-" ++ show nSeqNr)
-    mapM_ (\s-> printf "b %d\n" s) [seqNr..nSeqNr]
+    mapM_ (\s-> hPrintf handle "b %d\n" s) [seqNr..nSeqNr]
     writeChan eChan $ serializeOriginMessageContentB nSeqNrByteSt procId
     threadDelay 10000
-    startURBroadcast eChan procId (-1) (nSeqNr + 1)
+    startURBroadcast eChan procId (-1) (nSeqNr + 1) handle
 -- broadcasts until the msgCnt limit is reached
-startURBroadcast eChan procId msgCnt seqNr  = do
+startURBroadcast eChan procId msgCnt seqNr handle = do
     lim <- fetchMsgLimit msgCnt
     let nSeqNr = seqNr + lim - 1
     let nSeqNrByteSt = C.pack (show seqNr ++ "-" ++ show (nSeqNr))
-    mapM_ (\s-> printf "b %d\n" s) [seqNr..nSeqNr]
+    mapM_ (\s-> hPrintf handle "b %d\n" s) [seqNr..nSeqNr]
     writeChan eChan $ serializeOriginMessageContentB nSeqNrByteSt procId
     threadDelay 10000
-    startURBroadcast eChan procId (msgCnt - lim) (nSeqNr + 1)
+    startURBroadcast eChan procId (msgCnt - lim) (nSeqNr + 1) handle
 
 
 fetchMsgLimit :: Int -> IO Int
@@ -71,24 +82,30 @@ fetchMsgLimit l =
                 else getStdRandom (randomR (9,l))
 
 
-setupNetwork :: Int -> [(String, Int)] -> IO (BoundedChan L.ByteString)
-setupNetwork pId ipsPorts =
+setupNetwork ::
+    Int
+    -> [(String, Int)]
+    -> Handle
+    -> IO (BoundedChan L.ByteString)
+setupNetwork pId ipsPorts handle =
     establishPTPLinks pAddr foreignAddresses
-        >>= setupMessageCollector (head $ show pId)
+        >>= setupMessageCollector (head $ show pId) handle
     where
         foreignAddresses = [ ipsPorts!!fId | fId <- [0..4], fId /= (pId-1) ]
         pAddr = ipsPorts!!(pId-1)
 
 
-setupMessageCollector :: Char
-                         -> (TChan L.ByteString, [Socket])
-                         -> IO (BoundedChan L.ByteString)
-setupMessageCollector pId (iChan, eSockets) = do
+setupMessageCollector ::
+    Char
+    -> Handle
+    -> (TChan L.ByteString, [Socket])
+    -> IO (BoundedChan L.ByteString)
+setupMessageCollector pId handle (iChan, eSockets) = do
     eChan <- newBoundedChan egressChanLength :: IO (BoundedChan L.ByteString)
     fw <- H.new :: IO (HashTable L.ByteString L.ByteString)
     dlv <- H.new :: IO (HashTable Char DeliveryGuard)
     mapM_ (\key -> H.insert dlv key value) ['1'..'5']
-    _ <- forkIO (messageCollector pId eChan eSockets iChan M.empty fw dlv)
+    _ <- forkIO (messageCollector handle pId eChan eSockets iChan M.empty fw dlv)
     return eChan
     where
         value = newDeliveryGuard
@@ -122,20 +139,22 @@ deliverURB :: L.ByteString -> IO ()
 deliverURB msg = putStrLn $ "deliveree: " ++ (show $ L.take 3 msg)
 
 
-messageCollector    :: Char                                 -- process ID
-                    -> BoundedChan (L.ByteString)           -- egress channel
-                    -> [Socket]                             -- egress sockets
-                    -> TChan (L.ByteString)                 -- ingress channel
-                    -> M.Map (L.ByteString) L.ByteString    -- histories
-                    -> HashTable L.ByteString L.ByteString  -- forward
-                    -> HashTable Char DeliveryGuard         -- delivered
-                    -> IO ()
-messageCollector pId eChan eSockets iChan histories fw dlv = do
+messageCollector ::
+    Handle
+    -> Char                                    -- process ID
+    -> BoundedChan (L.ByteString)           -- egress channel
+    -> [Socket]                             -- egress sockets
+    -> TChan (L.ByteString)                 -- ingress channel
+    -> M.Map (L.ByteString) L.ByteString    -- histories
+    -> HashTable L.ByteString L.ByteString  -- forward
+    -> HashTable Char DeliveryGuard         -- delivered
+    -> IO ()
+messageCollector handle pId eChan eSockets iChan histories fw dlv = do
     allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
     -- putStrLn $ "Fetched some ingress messages: " ++ (show allIMsg)
     let (nHistories, readyForDelivery, addToFw) =
             updateHistories pId histories allIMsg [] []
-    handleDelivery readyForDelivery dlv
+    handleDelivery handle readyForDelivery dlv
     allEMsg <- collectAvailableEMsg eChan [] 1
     -- putStrLn $ "Collected some egress messages: " ++ (show allEMsg)
     let nnHistories = addEMsgsToHistories allEMsg nHistories
@@ -153,7 +172,7 @@ messageCollector pId eChan eSockets iChan histories fw dlv = do
 
     --         messageCollector pId eChan eSockets iChan nnHistories fw dlv
     --     else
-    messageCollector pId eChan eSockets iChan nnHistories fw dlv
+    messageCollector handle pId eChan eSockets iChan nnHistories fw dlv
 
 getLength :: Int -> a -> IO Int
 getLength soFar _ = return $ soFar+1
@@ -241,22 +260,23 @@ handleBroadcast forward pId eSockets = do
 
 
 handleDelivery ::
-    [L.ByteString]
+    Handle
+    -> [L.ByteString]
     -> HashTable Char DeliveryGuard
     -> IO ()
-handleDelivery []     _ = return ()
-handleDelivery (m:xm) devRecords = do
+handleDelivery _      []     _ = return ()
+handleDelivery handle (m:xm) devRecords = do
     let (allSeqNr, origin) = deserializeMessageContentB m
     mGuard <- H.lookup devRecords origin
     let guard = fromJust mGuard
     let (can, newGuard) = canDeliverRange guard (head allSeqNr) (last allSeqNr)
     if can
         then
-            mapM_ (\s -> printf "d %c %d\n" origin s) allSeqNr
+            mapM_ (\s -> hPrintf handle "d %c %d\n" origin s) allSeqNr
             >> H.insert devRecords origin newGuard
-            >> handleDelivery xm devRecords
+            >> handleDelivery handle xm devRecords
         else
-            handleDelivery xm devRecords
+            handleDelivery handle xm devRecords
 
 compactHistories ::
     [L.ByteString]

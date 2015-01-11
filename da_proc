@@ -1,6 +1,0 @@
-#!/bin/sh
-
-id=$1
-output="da_proc_${id}.out"
-
-./dist/build/nifty-urb/nifty-urb "$@" > "$output"

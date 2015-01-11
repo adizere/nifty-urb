@@ -1,6 +1,5 @@
 # Everything is managed by cabal-install, so install it
 # Note: sudo needed for these steps
-
 sudo apt-get update
 sudo apt-get install cabal-install
 
@@ -19,8 +18,10 @@ cabal install --only-dependencies
 cabal configure
 cabal build
 
-# Finally, we can run the executable
-# Use the da_proc wrapper:
+# Create a symbolic link s.t. we can run the process from this directory
+ln -s ./dist/build/nifty-urb/nifty-urb ./da_proc
+
+# Finally, we can run:
 ./da_proc 1 127.0.0.1 9991 127.0.0.1 9992 127.0.0.1 9993 127.0.0.1 9994 127.0.0.1 9995 -1 &
 ./da_proc 2 127.0.0.1 9991 127.0.0.1 9992 127.0.0.1 9993 127.0.0.1 9994 127.0.0.1 9995 -1 &
 ./da_proc 3 127.0.0.1 9991 127.0.0.1 9992 127.0.0.1 9993 127.0.0.1 9994 127.0.0.1 9995 -1 &
