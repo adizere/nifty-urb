@@ -23,7 +23,7 @@ establishPTPLinks (mIp, mPort) fAddresses = do
 
 getEgressSocket :: (String, Int) -> IO Socket
 getEgressSocket (fIp, fPort) = do
-    putStrLn $ "Getting an egress socket for " ++ fIp ++ (show fPort)
+    -- putStrLn $ "Getting an egress socket for " ++ fIp ++ (show fPort)
     (serveraddr:_) <- getAddrInfo Nothing (Just fIp) (Just $ show fPort)
     s <- socket (addrFamily serveraddr) Datagram defaultProtocol
     connect s (addrAddress serveraddr) >> return s
@@ -49,6 +49,6 @@ channeliseIngressPTPMessages :: TChan (L.ByteString) -> Socket -> IO ()
 channeliseIngressPTPMessages iChan sock =
     forever $ do
         msg <- recv sock 256
-        putStrLn $ "Got a message lol " ++ (show msg)
+        -- putStrLn $ "Got a message lol " ++ (show msg)
         atomically $ writeTChan iChan msg
         return ()

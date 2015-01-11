@@ -2,6 +2,7 @@ module Nifty.Message where
 
 import qualified Data.ByteString       as L
 import qualified Data.ByteString.Char8 as C
+import Data.Maybe
 
 
 serializeOriginMessageContent ::
@@ -11,6 +12,25 @@ serializeOriginMessageContent ::
 serializeOriginMessageContent seqNr pId =
     C.pack (show seqNr ++ show pId)
 
+
+serializeOriginMessageContentB ::
+    L.ByteString
+    -> Int
+    -> L.ByteString
+serializeOriginMessageContentB seqNr pId =
+    C.append seqNr $ C.pack (show pId)
+
+
+deserializeMessageContentB ::
+    L.ByteString
+    -> ([Integer], Char)
+deserializeMessageContentB content =
+    ([x | x <- [chunk1Int..chunk2Int]], origin)
+    where
+        chunks = C.span (\c -> c /= '-') content
+        chunk1Int = fst $ fromJust (C.readInteger (fst chunks))
+        (chunk2, origin) = fromJust $ C.unsnoc (C.drop 1 (snd chunks))
+        chunk2Int = fst $ fromJust $ C.readInteger chunk2
 
 serializeForwardedMessage ::
     L.ByteString        -- message content

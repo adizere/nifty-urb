@@ -6,9 +6,7 @@ import Nifty.Message
 import Control.Exception
 import Network.Socket                       hiding (send)
 import Network.Socket.ByteString       (sendAll)
-import qualified Data.Set                   as S
 import qualified Data.ByteString       as L
-import qualified Data.ByteString.Char8 as C
 
 
 broadcastOnce :: (L.ByteString, L.ByteString)   -- (message content, history)
@@ -26,7 +24,7 @@ broadcastOneMessage ::
     -> [Socket]
     -> IO ()
 broadcastOneMessage m sos = do
-    putStrLn $ "Sending message " ++ (show m) ++ " to all"
+    -- putStrLn $ "Sending message " ++ (show m) ++ " to all"
     mapM_ (\s -> (sendWithError s m) `catch` hndl) sos
 
 

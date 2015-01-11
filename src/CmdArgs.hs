@@ -12,13 +12,13 @@ parseArgs = do
     let ipPorts  = parseIpsPorts (drop 1 argz) []
     let msgCount = parseMessagesCount $ drop 11 argz
 
-    putStrLn $ "this proc has id " ++ (show procId)
-    putStrLn $ "all procs info " ++ (show ipPorts)
-    putStrLn $ "message count " ++ (show msgCount)
+    -- putStrLn $ "this proc has id " ++ (show procId)
+    -- putStrLn $ "all procs info " ++ (show ipPorts)
+    -- putStrLn $ "message count " ++ (show msgCount)
 
-    if (isNothing procId || isNothing ipPorts || isNothing msgCount) 
-        then 
-            putStrLn "Error parsing arguments!" >> return Nothing 
+    if (isNothing procId || isNothing ipPorts || isNothing msgCount)
+        then
+            putStrLn "Error parsing arguments!" >> return Nothing
         else
             return $ Just (fromJust procId, fromJust ipPorts, fromJust msgCount)
 
@@ -35,7 +35,7 @@ parseProcId argz
 parseIpsPorts :: [String] -> [(String, Int)] -> Maybe [(String, Int)]
 parseIpsPorts argz accum
     | length accum == 5 = Just $ reverse accum
-    | isJust newPort    = parseIpsPorts (drop 2 argz) 
+    | isJust newPort    = parseIpsPorts (drop 2 argz)
                                         ((newIp, fromJust newPort):accum)
     | otherwise         = Nothing
     where

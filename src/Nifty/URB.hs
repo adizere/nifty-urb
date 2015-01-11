@@ -4,7 +4,10 @@ module Nifty.URB where
 import Nifty.PointToPointLink
 import Nifty.BEB
 import Nifty.Message
+import Nifty.DeliveryGuard
 
+import Text.Printf
+import System.Random
 import Control.Concurrent.STM.TChan
 import Control.Concurrent.BoundedChan
 import Control.Concurrent                   (threadDelay)
@@ -15,7 +18,6 @@ import Network.Socket                       hiding (recv)
 import Data.Maybe
 import qualified Data.ByteString        as L
 import qualified Data.ByteString.Char8  as C
-import qualified Data.Set               as S
 import qualified Data.Map.Strict        as M
 import qualified Data.HashTable.IO      as H
 
@@ -33,7 +35,7 @@ iMsgCollectorLimit = 100
 
 startURB :: (Int, [(String, Int)], Int) -> MVar (Int) -> IO ()
 startURB (procId, ipsPorts, msgCnt) stMVar = do
-    putStrLn "Waiting.. "
+    -- putStrLn "Waiting.. "
     eChan <- setupNetwork procId ipsPorts
     takeMVar stMVar >> startURBroadcast eChan procId msgCnt 1
 
@@ -42,14 +44,31 @@ startURBroadcast :: BoundedChan (L.ByteString) -> Int -> Int -> Int -> IO ()
 startURBroadcast _ _ 0 _ = return ()
 -- broadcasts indefinitely
 startURBroadcast eChan procId (-1) seqNr = do
-    putStrLn $ "I am broadcasting.. " ++ (show seqNr)
-    writeChan eChan $ serializeOriginMessageContent seqNr procId
-    startURBroadcast eChan procId (-1) (seqNr+1)
+    lim <- fetchMsgLimit 300
+    let nSeqNr = seqNr + lim
+    let nSeqNrByteSt = C.pack (show seqNr ++ "-" ++ show nSeqNr)
+    mapM_ (\s-> printf "b %d\n" s) [seqNr..nSeqNr]
+    writeChan eChan $ serializeOriginMessageContentB nSeqNrByteSt procId
+    threadDelay 10000
+    startURBroadcast eChan procId (-1) (nSeqNr + 1)
 -- broadcasts until the msgCnt limit is reached
 startURBroadcast eChan procId msgCnt seqNr  = do
-    putStrLn $ "I am broadcasting.. " ++ (show seqNr)
-    writeChan eChan $ serializeOriginMessageContent seqNr procId
-    startURBroadcast eChan procId (msgCnt-1) (seqNr+1)
+    lim <- fetchMsgLimit msgCnt
+    let nSeqNr = seqNr + lim - 1
+    let nSeqNrByteSt = C.pack (show seqNr ++ "-" ++ show (nSeqNr))
+    mapM_ (\s-> printf "b %d\n" s) [seqNr..nSeqNr]
+    writeChan eChan $ serializeOriginMessageContentB nSeqNrByteSt procId
+    threadDelay 10000
+    startURBroadcast eChan procId (msgCnt - lim) (nSeqNr + 1)
+
+
+fetchMsgLimit :: Int -> IO Int
+fetchMsgLimit l =
+    if l <= 10
+        then return l
+        else if l > 300
+                then getStdRandom (randomR (9,300))
+                else getStdRandom (randomR (9,l))
 
 
 setupNetwork :: Int -> [(String, Int)] -> IO (BoundedChan L.ByteString)
@@ -67,10 +86,12 @@ setupMessageCollector :: Char
 setupMessageCollector pId (iChan, eSockets) = do
     eChan <- newBoundedChan egressChanLength :: IO (BoundedChan L.ByteString)
     fw <- H.new :: IO (HashTable L.ByteString L.ByteString)
-    dlv <- H.new :: IO (HashTable Char L.ByteString)
-    mapM_ (\key -> H.insert dlv key L.empty) ['1'..'5']
+    dlv <- H.new :: IO (HashTable Char DeliveryGuard)
+    mapM_ (\key -> H.insert dlv key value) ['1'..'5']
     _ <- forkIO (messageCollector pId eChan eSockets iChan M.empty fw dlv)
     return eChan
+    where
+        value = newDeliveryGuard
 
 
 collectAvailableIMsg :: TChan (L.ByteString)    -- input channel
@@ -107,24 +128,35 @@ messageCollector    :: Char                                 -- process ID
                     -> TChan (L.ByteString)                 -- ingress channel
                     -> M.Map (L.ByteString) L.ByteString    -- histories
                     -> HashTable L.ByteString L.ByteString  -- forward
-                    -> HashTable Char L.ByteString          -- delivered
+                    -> HashTable Char DeliveryGuard         -- delivered
                     -> IO ()
 messageCollector pId eChan eSockets iChan histories fw dlv = do
     allIMsg <- collectAvailableIMsg iChan [] iMsgCollectorLimit
-    putStrLn $ "Fetched some ingress messages: " ++ (show allIMsg)
+    -- putStrLn $ "Fetched some ingress messages: " ++ (show allIMsg)
     let (nHistories, readyForDelivery, addToFw) =
             updateHistories pId histories allIMsg [] []
-    putStrLn $ "Will add to forward the following " ++ show (addToFw)
     handleDelivery readyForDelivery dlv
-    allEMsg <- collectAvailableEMsg eChan [] egressChanLength
-    putStrLn $ "Collected some egress messages: " ++ (show allEMsg)
+    allEMsg <- collectAvailableEMsg eChan [] 1
+    -- putStrLn $ "Collected some egress messages: " ++ (show allEMsg)
     let nnHistories = addEMsgsToHistories allEMsg nHistories
-    putStrLn $ "Histories looks as follows: " ++ show (nnHistories)
     updateForward allEMsg addToFw fw
     handleBroadcast fw pId eSockets
-    threadDelay 10000000
+    threadDelay 10000
+    -- let nnnHistories = compactHistories readyToDelete nnHistories
+    -- if pId == '1'
+    --     then do
+    --         b <- H.foldM getLength 0 fw
+    --         putStrLn $ "lengths " ++ show (length addToFw) ++ " " ++
+    --                     show (M.size nnHistories) ++ " " ++
+    --                     show (length addToFw) ++ " " ++
+    --                     show (length readyToDelete) ++ " " ++ (show b)
+
+    --         messageCollector pId eChan eSockets iChan nnHistories fw dlv
+    --     else
     messageCollector pId eChan eSockets iChan nnHistories fw dlv
 
+getLength :: Int -> a -> IO Int
+getLength soFar _ = return $ soFar+1
 
 updateHistories :: Char                                 -- process ID
                 -> M.Map (L.ByteString) L.ByteString    -- current histories
@@ -184,11 +216,11 @@ updateForward ::
     -> [L.ByteString]                           -- ingress msgs to be forwarded
     -> HashTable L.ByteString L.ByteString      -- current fw
     -> IO ()
-updateForward [] [] fw = return ()
+updateForward [] [] _ = return ()
 updateForward em im fw = do
-    putStrLn $ "Adding to forward the following e " ++ show (em)
+    -- putStrLn $ "Adding to forward the following e " ++ show (em)
     mapM_ (\m -> H.insert fw m L.empty) em
-    putStrLn $ "Adding to forward the following i " ++ show (im)
+    -- putStrLn $ "Adding to forward the following i " ++ show (im)
     mapM_ (\m -> do
                     let (con, _, hist) = deserializeMessage m
                     H.insert fw con hist) im
@@ -210,22 +242,25 @@ handleBroadcast forward pId eSockets = do
 
 handleDelivery ::
     [L.ByteString]
-    -> HashTable Char L.ByteString
+    -> HashTable Char DeliveryGuard
     -> IO ()
-handleDelivery toDlv devRecords = do
-    mapM_ (\m -> do
-                    let (seqNr, origin) = splitContent m
-                    mlSeqNr <- H.lookup devRecords origin
-                    case mlSeqNr
-                        of  Just lastSeq ->
-                                if seqNr > lastSeq
-                                    then do
-                                        putStrLn $ " * " ++ (show seqNr) ++ " " ++ (show origin)
-                                        H.insert devRecords origin seqNr
-                                        return ()
-                                    else return ()
-                            Nothing -> return ()
-          ) toDlv
-    return ()
-    where
-        splitContent cn = fromJust $ deserializeMessageContent cn
+handleDelivery []     _ = return ()
+handleDelivery (m:xm) devRecords = do
+    let (allSeqNr, origin) = deserializeMessageContentB m
+    mGuard <- H.lookup devRecords origin
+    let guard = fromJust mGuard
+    let (can, newGuard) = canDeliverRange guard (head allSeqNr) (last allSeqNr)
+    if can
+        then
+            mapM_ (\s -> printf "d %c %d\n" origin s) allSeqNr
+            >> H.insert devRecords origin newGuard
+            >> handleDelivery xm devRecords
+        else
+            handleDelivery xm devRecords
+
+compactHistories ::
+    [L.ByteString]
+    -> M.Map (L.ByteString) L.ByteString
+    -> M.Map (L.ByteString) L.ByteString
+compactHistories []     hist = hist
+compactHistories (m:xm) hist = compactHistories xm $ M.delete m hist

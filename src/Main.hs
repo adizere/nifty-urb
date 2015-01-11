@@ -13,7 +13,7 @@ import System.Exit (exitSuccess)
 
 stopHandler :: MVar (Int) -> IO ()
 stopHandler stopMVar = do
-    putStrLn "Signal caught.. program will exit"
+    -- putStrLn "Signal caught.. program will exit"
     putMVar stopMVar 1
 
 
